@@ -229,10 +229,10 @@ td .badge{display:inline-block;padding:3px 10px;border-radius:99px;font-size:.75
 
 /* ALERTS */
 .alert{padding:13px 18px;border-radius:10px;margin-bottom:20px;font-size:.9rem;animation:fadeIn .3s ease;display:flex;align-items:center;gap:10px}
-.alert-success{background:rgba(0,200,150,.12);border:1px solid rgba(0,200,150,.3);color:var(--green)}
+.alert-success{background:#16a34a;border:1px solid #15803d;color:#ffffff;font-weight:600}
 .alert-danger{background:rgba(255,77,109,.12);border:1px solid rgba(255,77,109,.3);color:var(--red)}
 .alert-warning{background:rgba(255,209,102,.12);border:1px solid rgba(255,209,102,.3);color:var(--yellow)}
-.alert-info{background:rgba(10,22,40,.5);border:1px solid var(--border);color:var(--text2)}
+.alert-info{background:rgba(100,160,255,.08);border:1px solid rgba(100,160,255,.3);color:#7eb8f7}
 
 /* SECTION TITLE */
 .section-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
@@ -638,8 +638,29 @@ def base_layout(content, active=""):
 def _flashes():
     msgs = ""
     for cat, msg in get_flashed_messages(with_categories=True):
-        icon = "✓" if cat=="success" else ("✕" if cat=="danger" else "!")
-        msgs += f'<div class="alert alert-{cat}">{icon} {msg}</div>'
+        if cat == "success":
+            icon = "✓"
+        elif cat == "danger":
+            icon = "✕"
+        elif cat == "warning":
+            icon = "⚠"
+        else:
+            icon = "ℹ"
+        # success messages get an id for auto-dismiss
+        extra_id = 'id="flash-success"' if cat == "success" else ""
+        msgs += f'<div class="alert alert-{cat}" {extra_id}>{icon} {msg}</div>'
+    if msgs:
+        msgs += """<script>
+        var fs = document.getElementById('flash-success');
+        if(fs){
+            setTimeout(function(){
+                fs.style.transition='opacity .6s ease, transform .6s ease';
+                fs.style.opacity='0';
+                fs.style.transform='translateY(-8px)';
+                setTimeout(function(){ fs.remove(); }, 650);
+            }, 3500);
+        }
+        </script>"""
     return msgs
 
 from flask import get_flashed_messages
@@ -674,6 +695,8 @@ def login():
             session["user_id"] = user["id"]
             session["name"]    = user["name"]
             session["role"]    = user["role"]
+            role_label = {"admin": "Admin", "teacher": "Teacher", "student": "Student"}.get(user["role"], "User")
+            flash(f'Welcome back, {user["name"]} ({role_label})! ✓', "success")
             return redirect(url_for("dashboard"))
         error = "Invalid email or password."
     html = f"""
@@ -704,48 +727,109 @@ def login():
 def register():
     if "user_id" in session:
         return redirect(url_for("dashboard"))
-    error = ""
+
+    # Per-field errors dict + keep old values for repopulating form
+    errors = {}
+    old    = {"name": "", "email": "", "role": "student"}
+
     if request.method == "POST":
         name  = request.form.get("name","").strip()
         email = request.form.get("email","").strip()
         pw    = request.form.get("password","")
+        pw2   = request.form.get("password2","")
         role  = request.form.get("role","student")
         if role not in ("student","teacher"): role = "student"
-        if not name or not email or not pw:
-            error = "All fields are required."
+
+        old = {"name": name, "email": email, "role": role}
+
+        # ── Full Name validation ──────────────────────────
+        if not name:
+            errors["name"] = "Full name is required."
+        elif len(name) < 2:
+            errors["name"] = "Name must be at least 2 characters."
+        elif len(name) > 80:
+            errors["name"] = "Name must not exceed 80 characters."
+        elif not all(c.isalpha() or c in " .-'" for c in name):
+            errors["name"] = "Name can only contain letters, spaces, hyphens, dots, or apostrophes."
+
+        # ── Email validation ──────────────────────────────
+        if not email:
+            errors["email"] = "Email address is required."
+        elif "@" not in email or "." not in email.split("@")[-1]:
+            errors["email"] = "Please enter a valid email address."
+        elif len(email) > 120:
+            errors["email"] = "Email address is too long."
         elif query("SELECT id FROM users WHERE email=?", [email], one=True):
-            error = "Email already registered."
-        else:
+            errors["email"] = "This email is already registered. Try logging in."
+
+        # ── Password validation ───────────────────────────
+        if not pw:
+            errors["password"] = "Password is required."
+        elif len(pw) < 6:
+            errors["password"] = "Password must be at least 6 characters."
+        elif len(pw) > 128:
+            errors["password"] = "Password is too long (max 128 characters)."
+        elif pw.isdigit():
+            errors["password"] = "Password must contain at least one letter, not just numbers."
+        elif not pw2:
+            errors["password2"] = "Please confirm your password."
+        elif pw != pw2:
+            errors["password2"] = "Passwords do not match."
+
+        # ── If no errors, save ────────────────────────────
+        if not errors:
             execute("INSERT INTO users(name,email,password,role) VALUES(?,?,?,?)",
                     [name, email, generate_password_hash(pw), role])
-            flash("Account created! Please login.","success")
+            flash("Account created successfully! Please login. ✓","success")
             return redirect(url_for("login"))
+
+    # Helper: render one form field with inline error
+    def field(field_id, label, input_html):
+        err = errors.get(field_id,"")
+        border = "border-color:var(--red)" if err else ""
+        err_html = f'<div style="color:var(--red);font-size:.78rem;margin-top:5px;display:flex;align-items:center;gap:5px">✕ {err}</div>' if err else ""
+        return f"""<div class="form-group">
+          <label>{label}</label>
+          <div style="position:relative">{input_html.replace('style="', f'style="{border};').replace('<input ', f'<input style="{border}" ') if border else input_html}</div>
+          {err_html}
+        </div>"""
+
+    name_input  = f'<input type="text" name="name" placeholder="John Doe" value="{old["name"]}" autocomplete="name">'
+    email_input = f'<input type="email" name="email" placeholder="you@example.com" value="{old["email"]}" autocomplete="email">'
+    pw_input    = '<input type="password" name="password" placeholder="Min. 6 characters" autocomplete="new-password">'
+    pw2_input   = '<input type="password" name="password2" placeholder="Repeat your password" autocomplete="new-password">'
+
+    role_opts = "".join(
+        f'<option value="{v}" {"selected" if old["role"]==v else ""}>{l}</option>'
+        for v,l in [("student","Student"),("teacher","Teacher")]
+    )
+
     html = f"""
     <div class="auth-page">
-      <div class="auth-card">
+      <div class="auth-card" style="max-width:460px">
         <div class="logo">
           <div class="logo-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div>
           <span style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.1rem;color:var(--green)">ExamSys</span>
         </div>
         <h1>Create Account</h1>
         <p class="sub">Join the examination platform</p>
-        {"<div class='alert alert-danger'>✕ "+error+"</div>" if error else ""}
-        <form method="POST">
-          <div class="form-group"><label>Full Name</label>
-            <input type="text" name="name" placeholder="John Doe" required></div>
-          <div class="form-group"><label>Email Address</label>
-            <input type="email" name="email" placeholder="you@example.com" required></div>
-          <div class="form-group"><label>Password</label>
-            <input type="password" name="password" placeholder="Min. 6 characters" required></div>
-          <div class="form-group"><label>Register As</label>
-            <select name="role">
-              <option value="student">Student</option>
-              <option value="teacher">Teacher</option>
-            </select></div>
-          <button class="btn btn-primary" style="width:100%;justify-content:center;padding:13px" type="submit">Create Account</button>
+        {"<div class='alert alert-danger' style='margin-bottom:16px'>✕ Please fix the errors below before continuing.</div>" if errors else ""}
+        <form method="POST" novalidate>
+          {field("name",    "Full Name",        name_input)}
+          {field("email",   "Email Address",    email_input)}
+          {field("password","Password",         pw_input)}
+          {field("password2","Confirm Password",pw2_input)}
+          <div class="form-group">
+            <label>Register As</label>
+            <select name="role">{role_opts}</select>
+          </div>
+          <button class="btn btn-primary" style="width:100%;justify-content:center;padding:13px" type="submit">
+            Create Account
+          </button>
         </form>
         <p style="text-align:center;margin-top:20px;font-size:.88rem;color:var(--text3)">
-          Have an account? <a href="{url_for('login')}" style="color:var(--green);text-decoration:none">Sign in</a></p>
+          Have an account? <a href="{url_for('login')}" style="color:var(--green);text-decoration:none">Sign in</a>
+        </p>
       </div>
     </div>"""
     return render_template_string(f"<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Register &mdash; ExamSys</title><style>{GLOBAL_STYLE}</style></head><body>{html}</body></html>")
@@ -753,7 +837,6 @@ def register():
 @app.route("/logout")
 def logout():
     session.clear()
-    flash("Logged out successfully.","info")
     return redirect(url_for("login"))
 
 # ─────────────────────────────────────────────
